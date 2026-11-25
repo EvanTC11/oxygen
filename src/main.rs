@@ -89,24 +89,33 @@ impl TokenType {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    let mut file = File::open("src/main.oxy")?;
-    let mut out = File::create("src/out.c")?;
+fn main() -> Result<()> {
+    let c = file_parse("main.oxy")?;
+    println!("{:#?}", c);
 
+    Ok(())
+}
+
+fn file_parse(in_path: &str) -> Result<String> {
+    let mut file = File::open(in_path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
-    let tokens_str = contents.trim().split_ascii_whitespace().collect::<Vec<&str>>();
-    let tokens = tokens_str.iter().map(|t| t.parse::<TokenType>().unwrap()).collect::<Vec<TokenType>>();
+    let mut tokens_str = contents.trim().split_ascii_whitespace().collect::<Vec<&str>>();
+    let mut tokens = tokens_str.iter().map(|t| t.parse::<TokenType>().unwrap()).collect::<Vec<TokenType>>();
+
+    let mut out = String::new();
 
     for (mut i, token) in tokens.iter().enumerate() {
         match token {
             TokenType::FUNCTION => {
-                let mut func = String::new();
                 let mut fn_tokens: Vec<TokenType> = Vec::new();
 
-                func += format!("{} {}", tokens_str[i + 1].parse::<DataType>().map_err(|e| anyhow!(e))?.as_str(), tokens_str[i + 2]).as_str();
+                out += format!("{} {}", tokens_str[i + 1].parse::<DataType>().map_err(|e| anyhow!(e))?.as_str(), tokens_str[i + 2]).as_str();
 
-                i += 3;
+                tokens_consume(&mut tokens_str, &mut tokens)?;
+                tokens_consume(&mut tokens_str, &mut tokens)?;
+                tokens_consume(&mut tokens_str, &mut tokens)?;
+
                 if tokens[i] != TokenType::OPEN_BRACKET {
                     panic!("Invalid token {:?}", tokens[i]);
                 };
@@ -127,8 +136,7 @@ fn main() -> anyhow::Result<()> {
 
                 fn_tokens.push(tokens[i]);
 
-                fn_tokens.iter().for_each(|t| func += t.as_str() );
-                func += "\n";
+                fn_tokens.iter().for_each(|t| out += t.as_str() );
 
                 i += 1;
                 match tokens[i] {
@@ -141,7 +149,7 @@ fn main() -> anyhow::Result<()> {
                             panic!("Invalid data type {:?}", tokens_str[i]);
                         }
 
-                        func += format!("{} {}", tokens[i - 1].as_str(), ret_val?).as_str();
+                        out += format!("{} {}", tokens[i - 1].as_str(), ret_val?).as_str();
 
                         i += 1;
                         if tokens[i] != TokenType::SEMI_COLON {
@@ -156,20 +164,25 @@ fn main() -> anyhow::Result<()> {
                         }
 
                         ret_tokens.push(tokens[i]);
-                        ret_tokens.iter().for_each(|t| func += t.as_str());
+                        ret_tokens.iter().for_each(|t| out += t.as_str());
                     },
 
                     _ => {
                         todo!();
                     }
                 }
-
-                out.write_all(func.as_bytes())?;
             }
 
             _ => continue,
         }
     }
+
+    Ok(out)
+}
+
+fn tokens_consume(tokens_str: &mut Vec<&str>, tokens: &mut Vec<TokenType>) -> Result<()> {
+    tokens_str.remove(0);
+    tokens.remove(0);
 
     Ok(())
 }

@@ -1,0 +1,4 @@
+fn int main ( )
+{
+    ret 0 ;
+}
