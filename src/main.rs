@@ -1,100 +1,149 @@
 extern crate strum;
-#[macro_use] extern crate strum_macros;
+extern crate strum_macros;
 
 use std::fs::File;
-use std::io::prelude::*;
+use std::io::{Read, Write};
 use std::str::FromStr;
-use anyhow::{Result, anyhow};
-use oxygen::token::{TokenType, DataType, Token, Consume};
-
+use anyhow::{bail, Result};
+use either::{ Left, Right};
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
+use oxygen::parser::Parser;
+use oxygen::{Statement};
+use oxygen::token::{Token, TokenType};
 
 fn main() -> Result<()> {
-    let c = file_parse("main.oxy")?;
-    println!("{:#?}", c);
+    let mut p = Parser {
+        tokens: get_tokens("main.oxy")?
+    };
+
+    let mut stmts = p.parse()?;
+    let mut f = File::create("out.c")?;
+    f.write_all(statements_to_c(&mut stmts)?.as_bytes())?;
 
     Ok(())
 }
 
-fn file_parse(in_path: &str) -> Result<String> {
-    let mut file = File::open(in_path)?;
+fn get_tokens(path: &str) -> Result<Vec<Token>> {
+    let mut file = File::open(path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
-    let tokens_raw = contents.trim().split_whitespace().collect::<Vec<&str>>();
-    let mut tokens: Vec<Token> = Vec::new();
-    for token in &tokens_raw {
-        tokens.push(Token {
-            tok_type: token.parse()?,
-            val: token.parse()?,
-        })
+
+    let mut tokens = Vec::new();
+    
+    let mut buf = String::new();
+
+    let mut chars = contents.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_alphabetic() {
+            buf.push(c);
+
+            while chars.peek().is_some_and(|next| next.is_alphabetic()) {
+                buf.push(chars.next().unwrap());
+            }
+
+            match TokenType::from_str(&buf).unwrap_or(TokenType::NONE) {
+                TokenType::RETURN => {
+                    tokens.push(Token::new(TokenType::RETURN, String::new()));
+                }
+                TokenType::FUNCTION => {
+                    tokens.push(Token::new(TokenType::FUNCTION, String::new()));
+                }
+                TokenType::INT => {
+                    tokens.push(Token::new(TokenType::INT, String::new()));
+                }
+                TokenType::NONE => {
+                    tokens.push(Token::new(TokenType::IDENTIFIER, buf.clone()));
+                    buf.clear();
+                }
+
+                _ => buf.clear()
+            }
+
+            buf.clear();
+        }
+
+        else if c.is_numeric() {
+            buf.push(c);
+            while chars.peek().is_some_and(|next| next.is_numeric()) {
+                buf.push(chars.next().unwrap());
+            }
+
+            tokens.push(Token::new(TokenType::INT_LIT, buf.clone()));
+            buf.clear();
+        }
+        
+        // else if TokenType::from_str(c.to_string().as_str())? == TokenType::MINUS {
+        //     // either minus or operation TODO: impliment arithmetic
+        //     buf.push(c);
+        //     if chars.peek().unwrap().is_numeric() {
+        //         buf.push(chars.next().unwrap());
+        //         while chars.peek().is_some_and(|next| next.is_numeric()) {
+        //             buf.push(chars.next().unwrap());
+        //         }
+        //         
+        //         tokens.push(Token::new(TokenType::MINUS, String::new()));
+        //         tokens.push(Token::new(TokenType::IDENTIFIER, buf.clone()));
+        //     }
+        //     
+        //     buf.clear();
+        // }
+
+        else if c.is_whitespace() {
+            continue;
+        }
+
+        else {
+            for tok in TokenType::iter() {
+                let try_tok = TokenType::from_str(c.to_string().as_str());
+                if try_tok.is_ok() && try_tok? == tok {
+                    tokens.push(Token::new(tok, String::new()));
+                    break;
+                }
+            }
+        }
     }
 
+    Ok(tokens)
+}
+
+fn statements_to_c(stmts: &mut Vec<Statement>) -> Result<String> {
     let mut out = String::new();
 
-    for (i, token) in tokens.clone().iter().enumerate() {
-        match token.tok_type {
-            TokenType::FUNCTION => {
-                let mut fn_tokens: Vec<TokenType> = Vec::new();
+    let mut stmts = stmts.iter_mut().peekable();
+    while let Some(stmt) = stmts.next() {
+        match stmt.expr {
+            Left(ref expr) => {
+                match expr.val {
+                    Left(ref t) => {
+                        match t.tok_type {
+                            TokenType::RETURN => {
+                                let ret_val = match &stmts.next().unwrap().expr {
+                                    Left(expr) => match &expr.val {
+                                        Left(token) => &token.val,
+                                        Right(_) => bail!("Expected a literal return value"),
+                                    },
+                                    Right(_) => bail!("Expected a return expression"),
+                                };
 
-                out += format!("{} {}", tokens[i + 1].val.parse::<DataType>().map_err(|e| anyhow!(e))?.as_str(), tokens[i + 2].val).as_str(); // TODO: use consume()
+                                out.push_str(&format!("return {};", ret_val));
+                            }
 
-                tokens.consume();
-                tokens.consume();
-                tokens.consume();
-                if tokens[i].tok_type != TokenType::OPEN_BRACKET {
-                    panic!("Invalid token {:?}", tokens[i]);
-                };
-
-                fn_tokens.push(tokens[i].tok_type.clone());
-
-                tokens.consume();
-                if tokens[i].tok_type != TokenType::CLOSE_BRACKET {
-                    panic!("Invalid token {:?}", tokens[i]);
-                }
-
-                fn_tokens.push(tokens[i].tok_type.clone());
-
-                tokens.consume();
-                if tokens[i].tok_type != TokenType::OPEN_CURLY_BRACKET {
-                    panic!("Invalid token {:?}", tokens[i]);
-                }
-
-                fn_tokens.push(tokens[i].tok_type.clone());
-
-                fn_tokens.iter().for_each(|t| out += t.as_str() );
-
-                tokens.consume();
-                match tokens[i].tok_type {
-                    TokenType::RETURN => {
-                        let mut ret_tokens: Vec<TokenType> = Vec::new();
-
-                        let prev = tokens[i].clone();
-                        tokens.consume();
-                        let ret_val = tokens[i].val.parse::<i16>().map_err(|e| anyhow!(e))?;
-                        out += format!("{} {}", prev.tok_type.as_str(), ret_val).as_str();
-
-                        tokens.consume();
-                        if tokens[i].tok_type != TokenType::SEMI_COLON {
-                            panic!("Invalid token {:?}", tokens[i]);
+                            _ => todo!()
                         }
+                    }
 
-                        ret_tokens.push(tokens[i].tok_type);
-
-                        tokens.consume();
-                        if tokens[i].tok_type != TokenType::CLOSE_CURLY_BRACKET {
-                            panic!("Invalid token {:?}", tokens[i]);
-                        }
-
-                        ret_tokens.push(tokens[i].tok_type);
-                        ret_tokens.iter().for_each(|t| out += t.as_str());
-                    },
-
-                    _ => {
-                        todo!();
+                    Right(ref bin_expr) => {
+                        todo!()
                     }
                 }
             }
 
-            _ => continue,
+            Right(ref mut func) => {
+                // TODO: implement params
+                let body = statements_to_c(&mut func.body)?;
+                out += &format!("{} {}() {{ {} }}", func.ret_type.as_str(), func.name, body);
+            }
         }
     }
 
